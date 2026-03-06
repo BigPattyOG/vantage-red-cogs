@@ -203,7 +203,7 @@ class SupportServerModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         url = self.support_url.value.strip()
-        if url and not (url.startswith("http://") or url.startswith("https://")):
+        if url and not url.startswith("https://"):
             await interaction.response.send_message(
                 "Please enter a full URL starting with `https://`.",
                 ephemeral=True,
@@ -556,7 +556,12 @@ class VantageModlog(commands.Cog):
         support_url = settings.get("support_server_url") or "Not set"
         embed.add_field(name="Support Server Button", value=truncate(support_url, limit=1000), inline=False)
 
-        embed.set_footer(text="Vantage Modlog")
+        footer_text = embed_cfg.get("footer_text", "").strip()
+        if footer_text:
+            footer_text = f"{footer_text} • Vantage Modlog"
+        else:
+            footer_text = "Vantage Modlog"
+        embed.set_footer(text=footer_text)
         if embed_cfg.get("thumbnail_url"):
             embed.set_thumbnail(url=embed_cfg["thumbnail_url"])
 
