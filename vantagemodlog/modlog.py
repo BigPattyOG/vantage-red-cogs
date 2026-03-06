@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import copy
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import discord
 from redbot.core import Config, commands
 from redbot.core.bot import Red
+
+log = logging.getLogger(__name__)
 
 VANTAGE_RED = 0xD7263D
 SUPPORT_SERVER_URL = "https://discord.gg/yourserver"
@@ -708,7 +711,16 @@ class VantageModlog(commands.Cog):
                 if entry.target and entry.target.id == target_id:
                     if now_utc() - entry.created_at <= window:
                         return entry
-        except (discord.Forbidden, discord.HTTPException):
+        except discord.Forbidden:
+            return None
+        except discord.HTTPException as exc:
+            log.warning(
+                "Failed to fetch audit log entries for guild %s (action=%s, target_id=%s): %s",
+                guild.id,
+                action,
+                target_id,
+                exc,
+            )
             return None
 
         return None
