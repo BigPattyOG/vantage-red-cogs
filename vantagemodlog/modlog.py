@@ -8,6 +8,10 @@ import discord
 from redbot.core import Config, commands
 from redbot.core.bot import Red
 
+VANTAGE_RED = 0xD7263D
+SUPPORT_SERVER_URL = "https://discord.gg/yourserver"
+TRANSIENT_FEEDBACK_SECONDS = 15
+
 EVENT_GROUP_LABELS: Dict[str, str] = {
     "message_events": "Messages",
     "member_events": "Members",
@@ -31,13 +35,12 @@ ENTRY_BUTTON_OPTIONS: Dict[str, str] = {
 DEFAULT_GUILD_SETTINGS: Dict[str, Any] = {
     "setup_complete": False,
     "log_channel_id": None,
-    "support_server_url": "",
     "entry_buttons": ["user_id", "jump_link"],
     "embed": {
         "title_prefix": "Vantage Modlog",
         "footer_text": "Vantage Logging",
         "thumbnail_url": "",
-        "color": 0x5865F2,
+        "color": VANTAGE_RED,
     },
     "events": {key: True for key in EVENT_GROUP_LABELS},
 }
@@ -67,30 +70,29 @@ def bool_emoji(value: bool) -> str:
 
 
 class UserIdButton(discord.ui.Button[discord.ui.View]):
-    def __init__(self, user_id: int):
+    def __init__(self, cog: "VantageModlog", user_id: int):
         super().__init__(label="User ID", style=discord.ButtonStyle.secondary)
+        self.cog = cog
         self.user_id = user_id
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        await interaction.response.send_message(
-            f"User ID: `{self.user_id}`",
-            ephemeral=True,
-        )
+        content = f"User ID: `{self.user_id}`"
+        await self.cog.send_transient_interaction_message(interaction, content)
 
 
 class LogEntryActionsView(discord.ui.View):
     def __init__(
         self,
         *,
+        cog: "VantageModlog",
         selected_buttons: Sequence[str],
         target_user_id: Optional[int],
         jump_url: Optional[str],
-        support_server_url: Optional[str],
     ):
         super().__init__(timeout=180)
 
         if "user_id" in selected_buttons and target_user_id:
-            self.add_item(UserIdButton(target_user_id))
+            self.add_item(UserIdButton(cog, target_user_id))
 
         if "jump_link" in selected_buttons and jump_url:
             self.add_item(
@@ -101,12 +103,12 @@ class LogEntryActionsView(discord.ui.View):
                 )
             )
 
-        if "support_server" in selected_buttons and support_server_url:
+        if "support_server" in selected_buttons:
             self.add_item(
                 discord.ui.Button(
                     label="Support Server",
                     style=discord.ButtonStyle.link,
-                    url=support_server_url,
+                    url=SUPPORT_SERVER_URL,
                 )
             )
 
@@ -132,7 +134,7 @@ class EmbedStyleModal(discord.ui.Modal):
             max_length=7,
             min_length=6,
             required=True,
-            placeholder="#5865F2",
+            placeholder="#D7263D",
         )
         self.footer_text = discord.ui.TextInput(
             label="Footer text",
@@ -159,16 +161,16 @@ class EmbedStyleModal(discord.ui.Modal):
         try:
             parsed_color = int(color_value, 16)
         except ValueError:
-            await interaction.response.send_message(
-                "Please provide a valid hex color like `#5865F2`.",
-                ephemeral=True,
+            await self.cog.send_transient_interaction_message(
+                interaction,
+                "Please provide a valid hex color like `#D7263D`.",
             )
             return
 
         if parsed_color < 0 or parsed_color > 0xFFFFFF:
-            await interaction.response.send_message(
+            await self.cog.send_transient_interaction_message(
+                interaction,
                 "Color must be between `#000000` and `#FFFFFF`.",
-                ephemeral=True,
             )
             return
 
@@ -180,40 +182,9 @@ class EmbedStyleModal(discord.ui.Modal):
         embed_settings["thumbnail_url"] = self.thumbnail_url.value.strip()
 
         await self.cog.config.guild(self.guild).embed.set(embed_settings)
-        await interaction.response.send_message(
-            "Embed style saved. Use `/modlog` again to view the updated dashboard preview.",
-            ephemeral=True,
-        )
-
-
-class SupportServerModal(discord.ui.Modal):
-    def __init__(self, cog: "VantageModlog", guild: discord.Guild, support_url: str):
-        super().__init__(title="Vantage Support Server URL")
-        self.cog = cog
-        self.guild = guild
-
-        self.support_url = discord.ui.TextInput(
-            label="Support server URL",
-            default=support_url,
-            required=False,
-            max_length=300,
-            placeholder="https://discord.gg/...",
-        )
-        self.add_item(self.support_url)
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        url = self.support_url.value.strip()
-        if url and not url.startswith("https://"):
-            await interaction.response.send_message(
-                "Please enter a full URL starting with `https://`.",
-                ephemeral=True,
-            )
-            return
-
-        await self.cog.config.guild(self.guild).support_server_url.set(url)
-        await interaction.response.send_message(
-            "Support server link saved.",
-            ephemeral=True,
+        await self.cog.send_transient_interaction_message(
+            interaction,
+            "Embed style saved. Your dashboard preview is now updated.",
         )
 
 
@@ -230,9 +201,9 @@ class LogChannelSelect(discord.ui.ChannelSelect):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         if not self.values:
-            await interaction.response.send_message(
+            await self.parent_view.cog.send_transient_interaction_message(
+                interaction,
                 "Please choose a channel.",
-                ephemeral=True,
             )
             return
 
@@ -360,9 +331,9 @@ class ModlogSetupView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author_id:
-            await interaction.response.send_message(
+            await self.cog.send_transient_interaction_message(
+                interaction,
                 "This setup panel is tied to the user who opened `/modlog`.",
-                ephemeral=True,
             )
             return False
 
@@ -370,13 +341,13 @@ class ModlogSetupView(discord.ui.View):
         if isinstance(user, discord.Member) and user.guild_permissions.manage_guild:
             return True
 
-        await interaction.response.send_message(
+        await self.cog.send_transient_interaction_message(
+            interaction,
             "You need the **Manage Server** permission to edit modlog settings.",
-            ephemeral=True,
         )
         return False
 
-    @discord.ui.button(label="Edit Embed Style", style=discord.ButtonStyle.primary, row=3)
+    @discord.ui.button(label="Customize Style", style=discord.ButtonStyle.danger, row=3)
     async def edit_embed_style(
         self,
         interaction: discord.Interaction,
@@ -385,28 +356,19 @@ class ModlogSetupView(discord.ui.View):
         settings = await self.cog.get_settings(self.guild)
         await interaction.response.send_modal(EmbedStyleModal(self.cog, self.guild, settings))
 
-    @discord.ui.button(label="Support URL", style=discord.ButtonStyle.secondary, row=3)
-    async def edit_support_url(
-        self,
-        interaction: discord.Interaction,
-        _: discord.ui.Button,
-    ) -> None:
-        support_url = await self.cog.config.guild(self.guild).support_server_url()
-        await interaction.response.send_modal(SupportServerModal(self.cog, self.guild, support_url))
-
-    @discord.ui.button(label="Send Test Entry", style=discord.ButtonStyle.secondary, row=3)
+    @discord.ui.button(label="Preview Log Entry", style=discord.ButtonStyle.secondary, row=3)
     async def send_test_entry(
         self,
         interaction: discord.Interaction,
         _: discord.ui.Button,
     ) -> None:
         await self.cog.send_test_log(self.guild, interaction.user)
-        await interaction.response.send_message(
+        await self.cog.send_transient_interaction_message(
+            interaction,
             "Test entry sent to your selected modlog channel.",
-            ephemeral=True,
         )
 
-    @discord.ui.button(label="Finalize Changes", style=discord.ButtonStyle.success, row=4)
+    @discord.ui.button(label="Save & Activate", style=discord.ButtonStyle.success, row=4)
     async def finalize_changes(
         self,
         interaction: discord.Interaction,
@@ -414,9 +376,9 @@ class ModlogSetupView(discord.ui.View):
     ) -> None:
         settings = await self.cog.get_settings(self.guild)
         if not settings.get("log_channel_id"):
-            await interaction.response.send_message(
+            await self.cog.send_transient_interaction_message(
+                interaction,
                 "Pick a log channel first.",
-                ephemeral=True,
             )
             return
 
@@ -430,9 +392,9 @@ class ModlogSetupView(discord.ui.View):
         self.sync_finalize_button(settings)
         embed = self.cog.build_dashboard_embed(self.guild, settings, first_time=False)
         await interaction.response.edit_message(embed=embed, view=self)
-        await interaction.followup.send(message, ephemeral=True)
+        await self.cog.send_transient_interaction_message(interaction, message)
 
-    @discord.ui.button(label="Refresh", style=discord.ButtonStyle.secondary, row=4)
+    @discord.ui.button(label="Reload Panel", style=discord.ButtonStyle.secondary, row=4)
     async def refresh_panel(
         self,
         interaction: discord.Interaction,
@@ -484,6 +446,25 @@ class VantageModlog(commands.Cog):
 
         return settings
 
+    async def send_transient_interaction_message(
+        self,
+        interaction: discord.Interaction,
+        content: str,
+    ) -> None:
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(
+                    content,
+                    delete_after=TRANSIENT_FEEDBACK_SECONDS,
+                )
+            else:
+                await interaction.response.send_message(
+                    content,
+                    delete_after=TRANSIENT_FEEDBACK_SECONDS,
+                )
+        except discord.HTTPException:
+            return
+
     def build_dashboard_embed(
         self,
         guild: discord.Guild,
@@ -492,27 +473,26 @@ class VantageModlog(commands.Cog):
         first_time: bool,
     ) -> discord.Embed:
         embed_cfg = settings["embed"]
-        color = discord.Color(embed_cfg["color"])
+        color = discord.Color(embed_cfg.get("color", VANTAGE_RED))
 
-        title = "Vantage Modlog Setup" if first_time else "Vantage Modlog Editor"
+        title = "Vantage Modlog - First-Time Setup" if first_time else "Vantage Modlog - Control Panel"
         description_lines = []
 
         if first_time:
             description_lines.extend(
                 [
-                    "Welcome to your first-time setup.",
-                    "Use the menus and buttons below, then click **Finalize Changes**.",
+                    "Welcome to Vantage Modlog.",
+                    "Work through the controls below, then click **Save & Activate**.",
                 ]
             )
         else:
-            description_lines.append("Update any setting below. Changes save immediately.")
+            description_lines.append("Manage your modlog settings here. Changes save instantly.")
 
         steps = [
-            ("Choose log channel", settings.get("log_channel_id") is not None),
-            ("Adjust embed style", True),
-            ("Choose event coverage", any(settings["events"].values())),
-            ("Pick log-entry buttons", True),
-            ("Finalize", settings.get("setup_complete", False)),
+            ("Log channel selected", settings.get("log_channel_id") is not None),
+            ("Event coverage selected", any(settings["events"].values())),
+            ("Action buttons configured", True),
+            ("Setup activated", settings.get("setup_complete", False)),
         ]
         checklist = "\n".join(f"{bool_emoji(done)} {label}" for label, done in steps)
 
@@ -537,11 +517,11 @@ class VantageModlog(commands.Cog):
             color=color,
             timestamp=now_utc(),
         )
-        embed.add_field(name="Checklist", value=checklist, inline=False)
-        embed.add_field(name="Log Channel", value=channel_text, inline=False)
-        embed.add_field(name="Logged Event Groups", value=truncate(enabled_text, limit=1000), inline=False)
+        embed.add_field(name="Setup Progress", value=checklist, inline=False)
+        embed.add_field(name="Log Destination", value=channel_text, inline=False)
+        embed.add_field(name="Enabled Event Groups", value=truncate(enabled_text, limit=1000), inline=False)
         embed.add_field(
-            name="Entry Buttons",
+            name="Entry Action Buttons",
             value=truncate(button_text, limit=1000),
             inline=False,
         )
@@ -551,16 +531,18 @@ class VantageModlog(commands.Cog):
             f"Color: `#{embed_cfg['color']:06X}`\n"
             f"Footer: `{embed_cfg['footer_text']}`"
         )
-        embed.add_field(name="Embed Preview", value=embed_preview, inline=False)
-
-        support_url = settings.get("support_server_url") or "Not set"
-        embed.add_field(name="Support Server Button", value=truncate(support_url, limit=1000), inline=False)
+        embed.add_field(name="Style Snapshot", value=embed_preview, inline=False)
+        embed.add_field(
+            name="Support Button URL",
+            value=f"`{SUPPORT_SERVER_URL}`",
+            inline=False,
+        )
 
         footer_text = embed_cfg.get("footer_text", "").strip()
         if footer_text:
-            footer_text = f"{footer_text} • Vantage Modlog"
+            footer_text = f"{footer_text} | Vantage"
         else:
-            footer_text = "Vantage Modlog"
+            footer_text = "Vantage"
         embed.set_footer(text=footer_text)
         if embed_cfg.get("thumbnail_url"):
             embed.set_thumbnail(url=embed_cfg["thumbnail_url"])
@@ -583,13 +565,11 @@ class VantageModlog(commands.Cog):
                 await ctx.interaction.followup.send(
                     embed=embed,
                     view=view,
-                    ephemeral=True,
                 )
             else:
                 await ctx.interaction.response.send_message(
                     embed=embed,
                     view=view,
-                    ephemeral=True,
                 )
         else:
             await ctx.send(embed=embed, view=view)
@@ -674,10 +654,10 @@ class VantageModlog(commands.Cog):
             return
 
         view = LogEntryActionsView(
+            cog=self,
             selected_buttons=settings.get("entry_buttons", []),
             target_user_id=target_user_id,
             jump_url=jump_url,
-            support_server_url=settings.get("support_server_url"),
         )
 
         try:
