@@ -70,31 +70,21 @@ def bool_emoji(value: bool) -> str:
 
 
 class UserIdButton(discord.ui.Button[discord.ui.View]):
-    def __init__(self, user_id: int):
+    def __init__(self, cog: "VantageModlog", user_id: int):
         super().__init__(label="User ID", style=discord.ButtonStyle.secondary)
+        self.cog = cog
         self.user_id = user_id
 
     async def callback(self, interaction: discord.Interaction) -> None:
         content = f"User ID: `{self.user_id}`"
-        try:
-            if interaction.response.is_done():
-                await interaction.followup.send(
-                    content,
-                    delete_after=TRANSIENT_FEEDBACK_SECONDS,
-                )
-            else:
-                await interaction.response.send_message(
-                    content,
-                    delete_after=TRANSIENT_FEEDBACK_SECONDS,
-                )
-        except discord.HTTPException:
-            return
+        await self.cog.send_transient_interaction_message(interaction, content)
 
 
 class LogEntryActionsView(discord.ui.View):
     def __init__(
         self,
         *,
+        cog: "VantageModlog",
         selected_buttons: Sequence[str],
         target_user_id: Optional[int],
         jump_url: Optional[str],
@@ -102,7 +92,7 @@ class LogEntryActionsView(discord.ui.View):
         super().__init__(timeout=180)
 
         if "user_id" in selected_buttons and target_user_id:
-            self.add_item(UserIdButton(target_user_id))
+            self.add_item(UserIdButton(cog, target_user_id))
 
         if "jump_link" in selected_buttons and jump_url:
             self.add_item(
@@ -483,7 +473,7 @@ class VantageModlog(commands.Cog):
         first_time: bool,
     ) -> discord.Embed:
         embed_cfg = settings["embed"]
-        color = discord.Color(VANTAGE_RED)
+        color = discord.Color(embed_cfg.get("color", VANTAGE_RED))
 
         title = "Vantage Modlog - First-Time Setup" if first_time else "Vantage Modlog - Control Panel"
         description_lines = []
@@ -664,6 +654,7 @@ class VantageModlog(commands.Cog):
             return
 
         view = LogEntryActionsView(
+            cog=self,
             selected_buttons=settings.get("entry_buttons", []),
             target_user_id=target_user_id,
             jump_url=jump_url,
