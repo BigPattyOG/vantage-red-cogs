@@ -84,6 +84,26 @@ def full_and_relative(dt: Optional[datetime]) -> str:
     return f"{discord.utils.format_dt(dt, style='F')} ({discord.utils.format_dt(dt, style='R')})"
 
 
+def action_with_icon(action: str) -> str:
+    if "Timeout" in action:
+        return f"⏱️ {action}"
+    if "Banned" in action:
+        return f"⛔ {action}"
+    if "Unbanned" in action:
+        return f"✅ {action}"
+    if "Deleted" in action:
+        return f"🗑️ {action}"
+    if "Created" in action:
+        return f"✨ {action}"
+    if "Updated" in action:
+        return f"🛠️ {action}"
+    if "Joined" in action:
+        return f"👋 {action}"
+    if "Left" in action or "Kicked" in action:
+        return f"🚪 {action}"
+    return action
+
+
 class UserIdButton(discord.ui.Button[discord.ui.View]):
     def __init__(self, cog: "VantageModlog", user_id: int):
         super().__init__(label="User ID", style=discord.ButtonStyle.secondary)
@@ -584,7 +604,7 @@ class VantageModlog(commands.Cog):
             return None
 
         embed = discord.Embed(
-            title=f"{guild.name} Modlog • {action}",
+            title=f"{guild.name} Modlog • {action_with_icon(action)}",
             description=details,
             color=discord.Color(VANTAGE_RED),
             timestamp=now_utc(),
@@ -673,23 +693,6 @@ class VantageModlog(commands.Cog):
             ],
             target_user_id=actor.id,
         )
-
-    async def maybe_kick_reason(self, guild: discord.Guild, user_id: int) -> Optional[str]:
-        me = guild.me
-        if me is None or not me.guild_permissions.view_audit_log:
-            return None
-
-        try:
-            async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.kick):
-                if entry.target and entry.target.id == user_id:
-                    if now_utc() - entry.created_at <= timedelta(seconds=15):
-                        actor_text = mention_user(entry.user) if entry.user else "Unknown moderator"
-                        reason_text = entry.reason or "No reason provided."
-                        return f"User was kicked by {actor_text}. Reason: {reason_text}"
-        except (discord.Forbidden, discord.HTTPException):
-            return None
-
-        return None
 
     async def get_recent_audit_entry(
         self,
@@ -902,20 +905,34 @@ class VantageModlog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member) -> None:
-        kick_details = await self.maybe_kick_reason(member.guild, member.id)
-        details = kick_details or f"{mention_user(member)} left the server."
+        fields: List[Tuple[str, str, bool]] = [
+            ("Joined This Server", full_and_relative(member.joined_at), False),
+            ("Joined Discord", full_and_relative(member.created_at), False),
+            ("Account Type", "Bot" if member.bot else "Human", True),
+            ("Avatar", f"[Open Profile Picture]({member.display_avatar.url})", False),
+        ]
+
+        action = "Member Left"
+        details = f"{mention_user(member)} left the server."
+
+        kick_entry = await self.get_recent_audit_entry(
+            member.guild,
+            discord.AuditLogAction.kick,
+            member.id,
+        )
+        if kick_entry:
+            action = "Member Kicked"
+            details = f"{mention_user(member)} was removed from the server."
+            moderator = mention_user(kick_entry.user) if kick_entry.user else "Unknown moderator"
+            fields.append(("Moderator", moderator, False))
+            fields.append(("Reason", kick_entry.reason or "No reason provided.", False))
 
         await self.send_log(
             member.guild,
             category="member_events",
-            action="Member Left",
+            action=action,
             details=details,
-            fields=[
-                ("Joined This Server", full_and_relative(member.joined_at), False),
-                ("Joined Discord", full_and_relative(member.created_at), False),
-                ("Account Type", "Bot" if member.bot else "Human", True),
-                ("Avatar", f"[Open Profile Picture]({member.display_avatar.url})", False),
-            ],
+            fields=fields,
             target_user_id=member.id,
             target_user=member,
         )
@@ -1129,22 +1146,55 @@ class VantageModlog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_guild_role_create(self, role: discord.Role) -> None:
+        fields: List[Tuple[str, str, bool]] = [
+            ("Role Name", f"`{role.name}`", False),
+            ("Role ID", str(role.id), True),
+            ("Color", str(role.color), True),
+        ]
+
+        audit_entry = await self.get_recent_audit_entry(
+            role.guild,
+            discord.AuditLogAction.role_create,
+            role.id,
+        )
+        if audit_entry:
+            moderator = mention_user(audit_entry.user) if audit_entry.user else "Unknown moderator"
+            fields.append(("Moderator", moderator, False))
+            if audit_entry.reason:
+                fields.append(("Reason", audit_entry.reason, False))
+
         await self.send_log(
             role.guild,
             category="role_events",
             action="Role Created",
-            details=f"Role {role.mention} was created.",
-            fields=[("Role ID", str(role.id), True)],
+            details=f"Role `{role.name}` was created.",
+            fields=fields,
         )
 
     @commands.Cog.listener()
     async def on_guild_role_delete(self, role: discord.Role) -> None:
+        fields: List[Tuple[str, str, bool]] = [
+            ("Role Name", f"`{role.name}`", False),
+            ("Role ID", str(role.id), True),
+            ("Color", str(role.color), True),
+        ]
+
+        audit_entry = await self.get_recent_audit_entry(
+            role.guild,
+            discord.AuditLogAction.role_delete,
+            role.id,
+        )
+        if audit_entry:
+            moderator = mention_user(audit_entry.user) if audit_entry.user else "Unknown moderator"
+            fields.append(("Moderator", moderator, False))
+            fields.append(("Reason", audit_entry.reason or "No reason provided.", False))
+
         await self.send_log(
             role.guild,
             category="role_events",
             action="Role Deleted",
             details=f"Role `{role.name}` was deleted.",
-            fields=[("Role ID", str(role.id), True)],
+            fields=fields,
         )
 
     @commands.Cog.listener()
@@ -1161,6 +1211,17 @@ class VantageModlog(commands.Cog):
             updates.append(("Shown Separately", f"`{before.hoist}` → `{after.hoist}`", True))
         if before.permissions != after.permissions:
             updates.append(("Permissions", "Role permissions changed.", False))
+
+        audit_entry = await self.get_recent_audit_entry(
+            after.guild,
+            discord.AuditLogAction.role_update,
+            after.id,
+        )
+        if audit_entry:
+            moderator = mention_user(audit_entry.user) if audit_entry.user else "Unknown moderator"
+            updates.append(("Moderator", moderator, False))
+            if audit_entry.reason:
+                updates.append(("Reason", audit_entry.reason, False))
 
         if not updates:
             return
