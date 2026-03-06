@@ -85,21 +85,22 @@ def full_and_relative(dt: Optional[datetime]) -> str:
 
 
 def action_with_icon(action: str) -> str:
-    if "Timeout" in action:
+    normalized = action.casefold()
+    if "timeout" in normalized:
         return f"⏱️ {action}"
-    if "Banned" in action:
-        return f"⛔ {action}"
-    if "Unbanned" in action:
+    if "unbanned" in normalized:
         return f"✅ {action}"
-    if "Deleted" in action:
+    if "banned" in normalized:
+        return f"⛔ {action}"
+    if "deleted" in normalized:
         return f"🗑️ {action}"
-    if "Created" in action:
+    if "created" in normalized:
         return f"✨ {action}"
-    if "Updated" in action:
+    if "updated" in normalized:
         return f"🛠️ {action}"
-    if "Joined" in action:
+    if "joined" in normalized:
         return f"👋 {action}"
-    if "Left" in action or "Kicked" in action:
+    if "left" in normalized or "kicked" in normalized:
         return f"🚪 {action}"
     return action
 
@@ -919,6 +920,7 @@ class VantageModlog(commands.Cog):
             member.guild,
             discord.AuditLogAction.kick,
             member.id,
+            window_seconds=15,
         )
         if kick_entry:
             action = "Member Kicked"
