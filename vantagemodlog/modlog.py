@@ -1015,9 +1015,9 @@ class VantageModlog(commands.Cog):
         )
         if audit_entry:
             moderator = mention_user(audit_entry.user) if audit_entry.user else "Unknown moderator"
+            reason = audit_entry.reason or "No reason provided."
             fields.append(("Moderator", moderator, False))
-            if audit_entry.reason:
-                fields.append(("Reason", audit_entry.reason, False))
+            fields.append(("Reason", reason, False))
 
         await self.send_log(
             guild,
@@ -1221,9 +1221,9 @@ class VantageModlog(commands.Cog):
         )
         if audit_entry:
             moderator = mention_user(audit_entry.user) if audit_entry.user else "Unknown moderator"
+            reason = audit_entry.reason or "No reason provided."
             updates.append(("Moderator", moderator, False))
-            if audit_entry.reason:
-                updates.append(("Reason", audit_entry.reason, False))
+            updates.append(("Reason", reason, False))
 
         if not updates:
             return
