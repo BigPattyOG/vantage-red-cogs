@@ -69,6 +69,12 @@ def bool_emoji(value: bool) -> str:
     return "✅" if value else "❌"
 
 
+def full_and_relative(dt: Optional[datetime]) -> str:
+    if dt is None:
+        return "Unknown"
+    return f"{discord.utils.format_dt(dt, style='F')} ({discord.utils.format_dt(dt, style='R')})"
+
+
 class UserIdButton(discord.ui.Button[discord.ui.View]):
     def __init__(self, cog: "VantageModlog", user_id: int):
         super().__init__(label="User ID", style=discord.ButtonStyle.secondary)
@@ -421,6 +427,8 @@ class VantageModlog(commands.Cog):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=8_247_019_663, force_registration=True)
         self.config.register_guild(**copy.deepcopy(DEFAULT_GUILD_SETTINGS))
+        self._invite_uses_cache: Dict[int, Dict[str, int]] = {}
+        self._vanity_uses_cache: Dict[int, Optional[int]] = {}
 
     async def get_settings(self, guild: discord.Guild) -> Dict[str, Any]:
         settings = await self.config.guild(guild).all()
@@ -464,6 +472,77 @@ class VantageModlog(commands.Cog):
                 )
         except discord.HTTPException:
             return
+
+    async def refresh_invite_cache(self, guild: discord.Guild) -> None:
+        me = guild.me
+        if me is None or not me.guild_permissions.manage_guild:
+            return
+
+        try:
+            invites = await guild.invites()
+        except (discord.Forbidden, discord.HTTPException):
+            return
+
+        self._invite_uses_cache[guild.id] = {invite.code: invite.uses or 0 for invite in invites}
+
+        vanity_uses: Optional[int] = None
+        if guild.vanity_url_code:
+            try:
+                vanity = await guild.vanity_invite()
+                vanity_uses = vanity.uses or 0
+            except (discord.Forbidden, discord.HTTPException):
+                vanity_uses = None
+        self._vanity_uses_cache[guild.id] = vanity_uses
+
+    async def detect_join_source(self, guild: discord.Guild) -> Tuple[str, str]:
+        me = guild.me
+        if me is None or not me.guild_permissions.manage_guild:
+            return (
+                "Unknown (grant **Manage Server** to detect invite usage).",
+                "Unavailable",
+            )
+
+        previous_uses = self._invite_uses_cache.get(guild.id)
+        if previous_uses is None:
+            await self.refresh_invite_cache(guild)
+            return ("Unknown (invite cache is warming up).", "Unavailable")
+
+        try:
+            invites = await guild.invites()
+        except (discord.Forbidden, discord.HTTPException):
+            return ("Unknown (could not fetch invites).", "Unavailable")
+
+        invite_match: Optional[discord.Invite] = None
+        for invite in invites:
+            old_uses = previous_uses.get(invite.code)
+            current_uses = invite.uses or 0
+            if old_uses is None and current_uses > 0:
+                invite_match = invite
+                break
+            if old_uses is not None and current_uses > old_uses:
+                invite_match = invite
+                break
+
+        self._invite_uses_cache[guild.id] = {invite.code: invite.uses or 0 for invite in invites}
+
+        if invite_match:
+            inviter_text = mention_user(invite_match.inviter) if invite_match.inviter else "Unknown inviter"
+            source = f"Invite `{invite_match.code}` by {inviter_text}"
+            return source, f"https://discord.gg/{invite_match.code}"
+
+        vanity_code = guild.vanity_url_code
+        if vanity_code:
+            old_vanity_uses = self._vanity_uses_cache.get(guild.id)
+            try:
+                vanity_invite = await guild.vanity_invite()
+                new_vanity_uses = vanity_invite.uses or 0
+                self._vanity_uses_cache[guild.id] = new_vanity_uses
+                if old_vanity_uses is not None and new_vanity_uses > old_vanity_uses:
+                    return ("Vanity invite", f"https://discord.gg/{vanity_code}")
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+
+        return ("Unknown (could not determine which invite was used).", "Unavailable")
 
     def build_dashboard_embed(
         self,
@@ -589,6 +668,7 @@ class VantageModlog(commands.Cog):
         details: str,
         category: str,
         fields: Optional[Iterable[Tuple[str, str, bool]]] = None,
+        target_user: Optional[discord.abc.User] = None,
     ) -> Optional[discord.Embed]:
         settings = await self.get_settings(guild)
         if not settings.get("setup_complete"):
@@ -609,7 +689,11 @@ class VantageModlog(commands.Cog):
                 embed.add_field(name=name, value=truncate(value, limit=1024), inline=inline)
 
         embed.set_footer(text=embed_settings["footer_text"])
-        if embed_settings.get("thumbnail_url"):
+        if target_user:
+            avatar_url = target_user.display_avatar.url
+            embed.set_author(name=f"{target_user} ({target_user.id})", icon_url=avatar_url)
+            embed.set_thumbnail(url=avatar_url)
+        elif embed_settings.get("thumbnail_url"):
             embed.set_thumbnail(url=embed_settings["thumbnail_url"])
 
         return embed
@@ -624,6 +708,7 @@ class VantageModlog(commands.Cog):
         fields: Optional[Iterable[Tuple[str, str, bool]]] = None,
         target_user_id: Optional[int] = None,
         jump_url: Optional[str] = None,
+        target_user: Optional[discord.abc.User] = None,
     ) -> None:
         settings = await self.get_settings(guild)
         if not settings.get("setup_complete"):
@@ -649,6 +734,7 @@ class VantageModlog(commands.Cog):
             details=details,
             category=category,
             fields=fields,
+            target_user=target_user,
         )
         if embed is None:
             return
@@ -700,6 +786,12 @@ class VantageModlog(commands.Cog):
             return None
 
         return None
+
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        for guild in self.bot.guilds:
+            if guild.id not in self._invite_uses_cache:
+                await self.refresh_invite_cache(guild)
 
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message) -> None:
@@ -849,17 +941,25 @@ class VantageModlog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member) -> None:
-        created_at = discord.utils.format_dt(member.created_at, style="R")
+        join_source, join_link = await self.detect_join_source(member.guild)
+        user_type = "Bot" if member.bot else "Human"
+        joined_server = full_and_relative(member.joined_at or now_utc())
         await self.send_log(
             member.guild,
             category="member_events",
             action="Member Joined",
             details=f"{mention_user(member)} joined the server.",
             fields=[
-                ("Account Created", created_at, False),
+                ("Account Type", user_type, True),
+                ("Joined Discord", full_and_relative(member.created_at), False),
+                ("Joined This Server", joined_server, False),
+                ("Join Source", join_source, False),
+                ("Join Link", join_link, False),
+                ("Avatar", f"[Open Profile Picture]({member.display_avatar.url})", False),
                 ("Member Count", str(member.guild.member_count), True),
             ],
             target_user_id=member.id,
+            target_user=member,
         )
 
     @commands.Cog.listener()
@@ -872,8 +972,14 @@ class VantageModlog(commands.Cog):
             category="member_events",
             action="Member Left",
             details=details,
-            fields=[("Joined At", discord.utils.format_dt(member.joined_at, style="R") if member.joined_at else "Unknown", False)],
+            fields=[
+                ("Joined This Server", full_and_relative(member.joined_at), False),
+                ("Joined Discord", full_and_relative(member.created_at), False),
+                ("Account Type", "Bot" if member.bot else "Human", True),
+                ("Avatar", f"[Open Profile Picture]({member.display_avatar.url})", False),
+            ],
             target_user_id=member.id,
+            target_user=member,
         )
 
     @commands.Cog.listener()
@@ -913,6 +1019,7 @@ class VantageModlog(commands.Cog):
             details=f"{mention_user(after)} had profile or moderation changes.",
             fields=changes,
             target_user_id=after.id,
+            target_user=after,
         )
 
     @commands.Cog.listener()
@@ -923,6 +1030,7 @@ class VantageModlog(commands.Cog):
             action="Member Banned",
             details=f"{mention_user(user)} was banned.",
             target_user_id=user.id,
+            target_user=user,
         )
 
     @commands.Cog.listener()
@@ -933,6 +1041,7 @@ class VantageModlog(commands.Cog):
             action="Member Unbanned",
             details=f"{mention_user(user)} was unbanned.",
             target_user_id=user.id,
+            target_user=user,
         )
 
     @commands.Cog.listener()
@@ -1178,6 +1287,9 @@ class VantageModlog(commands.Cog):
         if invite.guild is None:
             return
 
+        invite_cache = self._invite_uses_cache.setdefault(invite.guild.id, {})
+        invite_cache[invite.code] = invite.uses or 0
+
         inviter = mention_user(invite.inviter) if invite.inviter else "Unknown"
         max_uses = str(invite.max_uses) if invite.max_uses else "Unlimited"
 
@@ -1198,6 +1310,9 @@ class VantageModlog(commands.Cog):
     async def on_invite_delete(self, invite: discord.Invite) -> None:
         if invite.guild is None:
             return
+
+        invite_cache = self._invite_uses_cache.setdefault(invite.guild.id, {})
+        invite_cache.pop(invite.code, None)
 
         await self.send_log(
             invite.guild,
