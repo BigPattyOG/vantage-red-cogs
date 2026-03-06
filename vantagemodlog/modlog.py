@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -8,9 +9,23 @@ import discord
 from redbot.core import Config, commands
 from redbot.core.bot import Red
 
+log = logging.getLogger(__name__)
+
 VANTAGE_RED = 0xD7263D
 SUPPORT_SERVER_URL = "https://discord.gg/yourserver"
 TRANSIENT_FEEDBACK_SECONDS = 15
+SETUP_PANEL_TITLE = "Vantage Modlog Setup"
+MODLOG_FOOTER_TEXT = "Vantage Moderation"
+AUDIT_LOG_SCAN_LIMIT = 8
+AUDIT_LOG_WINDOW_SECONDS = 20
+MEMBER_UPDATE_ACTIONS: Dict[str, str] = {
+    "default": "Member Updated",
+    "timeout_added": "Timeout Added",
+    "timeout_removed": "Timeout Removed",
+    "timeout_updated": "Timeout Updated",
+    "roles_updated": "Roles Updated",
+    "nickname_updated": "Nickname Updated",
+}
 
 EVENT_GROUP_LABELS: Dict[str, str] = {
     "message_events": "Messages",
@@ -36,12 +51,6 @@ DEFAULT_GUILD_SETTINGS: Dict[str, Any] = {
     "setup_complete": False,
     "log_channel_id": None,
     "entry_buttons": ["user_id", "jump_link"],
-    "embed": {
-        "title_prefix": "Vantage Modlog",
-        "footer_text": "Vantage Logging",
-        "thumbnail_url": "",
-        "color": VANTAGE_RED,
-    },
     "events": {key: True for key in EVENT_GROUP_LABELS},
 }
 
@@ -117,81 +126,6 @@ class LogEntryActionsView(discord.ui.View):
                     url=SUPPORT_SERVER_URL,
                 )
             )
-
-
-class EmbedStyleModal(discord.ui.Modal):
-    def __init__(self, cog: "VantageModlog", guild: discord.Guild, settings: Dict[str, Any]):
-        super().__init__(title="Vantage Embed Style")
-        self.cog = cog
-        self.guild = guild
-
-        embed_settings = settings["embed"]
-
-        self.title_prefix = discord.ui.TextInput(
-            label="Embed title prefix",
-            default=embed_settings["title_prefix"],
-            max_length=100,
-            required=True,
-            placeholder="Vantage Modlog",
-        )
-        self.color_hex = discord.ui.TextInput(
-            label="Accent color (hex)",
-            default=f"#{embed_settings['color']:06X}",
-            max_length=7,
-            min_length=6,
-            required=True,
-            placeholder="#D7263D",
-        )
-        self.footer_text = discord.ui.TextInput(
-            label="Footer text",
-            default=embed_settings["footer_text"],
-            max_length=100,
-            required=True,
-            placeholder="Vantage Logging",
-        )
-        self.thumbnail_url = discord.ui.TextInput(
-            label="Thumbnail URL (optional)",
-            default=embed_settings["thumbnail_url"],
-            required=False,
-            placeholder="https://...",
-            max_length=300,
-        )
-
-        self.add_item(self.title_prefix)
-        self.add_item(self.color_hex)
-        self.add_item(self.footer_text)
-        self.add_item(self.thumbnail_url)
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        color_value = self.color_hex.value.strip().lstrip("#")
-        try:
-            parsed_color = int(color_value, 16)
-        except ValueError:
-            await self.cog.send_transient_interaction_message(
-                interaction,
-                "Please provide a valid hex color like `#D7263D`.",
-            )
-            return
-
-        if parsed_color < 0 or parsed_color > 0xFFFFFF:
-            await self.cog.send_transient_interaction_message(
-                interaction,
-                "Color must be between `#000000` and `#FFFFFF`.",
-            )
-            return
-
-        settings = await self.cog.get_settings(self.guild)
-        embed_settings = settings["embed"]
-        embed_settings["title_prefix"] = self.title_prefix.value.strip()
-        embed_settings["color"] = parsed_color
-        embed_settings["footer_text"] = self.footer_text.value.strip()
-        embed_settings["thumbnail_url"] = self.thumbnail_url.value.strip()
-
-        await self.cog.config.guild(self.guild).embed.set(embed_settings)
-        await self.cog.send_transient_interaction_message(
-            interaction,
-            "Embed style saved. Your dashboard preview is now updated.",
-        )
 
 
 class LogChannelSelect(discord.ui.ChannelSelect):
@@ -353,15 +287,6 @@ class ModlogSetupView(discord.ui.View):
         )
         return False
 
-    @discord.ui.button(label="Customize Style", style=discord.ButtonStyle.danger, row=3)
-    async def edit_embed_style(
-        self,
-        interaction: discord.Interaction,
-        _: discord.ui.Button,
-    ) -> None:
-        settings = await self.cog.get_settings(self.guild)
-        await interaction.response.send_modal(EmbedStyleModal(self.cog, self.guild, settings))
-
     @discord.ui.button(label="Preview Log Entry", style=discord.ButtonStyle.secondary, row=3)
     async def send_test_entry(
         self,
@@ -437,11 +362,6 @@ class VantageModlog(commands.Cog):
         for key, value in DEFAULT_GUILD_SETTINGS.items():
             if key not in settings:
                 settings[key] = copy.deepcopy(value)
-                changed = True
-
-        for key, value in DEFAULT_GUILD_SETTINGS["embed"].items():
-            if key not in settings["embed"]:
-                settings["embed"][key] = value
                 changed = True
 
         for key, value in DEFAULT_GUILD_SETTINGS["events"].items():
@@ -551,10 +471,8 @@ class VantageModlog(commands.Cog):
         *,
         first_time: bool,
     ) -> discord.Embed:
-        embed_cfg = settings["embed"]
-        color = discord.Color(embed_cfg.get("color", VANTAGE_RED))
-
-        title = "Vantage Modlog - First-Time Setup" if first_time else "Vantage Modlog - Control Panel"
+        color = discord.Color(VANTAGE_RED)
+        title = SETUP_PANEL_TITLE
         description_lines = []
 
         if first_time:
@@ -604,27 +522,16 @@ class VantageModlog(commands.Cog):
             value=truncate(button_text, limit=1000),
             inline=False,
         )
-
-        embed_preview = (
-            f"Prefix: `{embed_cfg['title_prefix']}`\n"
-            f"Color: `#{embed_cfg['color']:06X}`\n"
-            f"Footer: `{embed_cfg['footer_text']}`"
-        )
-        embed.add_field(name="Style Snapshot", value=embed_preview, inline=False)
         embed.add_field(
-            name="Support Button URL",
-            value=f"`{SUPPORT_SERVER_URL}`",
+            name="Branding",
+            value=(
+                f"Log title format: `{guild.name} Modlog`\n"
+                f"Support URL: `{SUPPORT_SERVER_URL}`\n"
+                f"Footer: `{MODLOG_FOOTER_TEXT}`"
+            ),
             inline=False,
         )
-
-        footer_text = embed_cfg.get("footer_text", "").strip()
-        if footer_text:
-            footer_text = f"{footer_text} | Vantage"
-        else:
-            footer_text = "Vantage"
-        embed.set_footer(text=footer_text)
-        if embed_cfg.get("thumbnail_url"):
-            embed.set_thumbnail(url=embed_cfg["thumbnail_url"])
+        embed.set_footer(text=MODLOG_FOOTER_TEXT)
 
         return embed
 
@@ -676,11 +583,10 @@ class VantageModlog(commands.Cog):
         if not settings["events"].get(category, True):
             return None
 
-        embed_settings = settings["embed"]
         embed = discord.Embed(
-            title=f"{embed_settings['title_prefix']} • {action}",
+            title=f"{guild.name} Modlog • {action}",
             description=details,
-            color=discord.Color(embed_settings["color"]),
+            color=discord.Color(VANTAGE_RED),
             timestamp=now_utc(),
         )
 
@@ -688,13 +594,11 @@ class VantageModlog(commands.Cog):
             for name, value, inline in fields:
                 embed.add_field(name=name, value=truncate(value, limit=1024), inline=inline)
 
-        embed.set_footer(text=embed_settings["footer_text"])
+        embed.set_footer(text=MODLOG_FOOTER_TEXT)
         if target_user:
             avatar_url = target_user.display_avatar.url
             embed.set_author(name=f"{target_user} ({target_user.id})", icon_url=avatar_url)
             embed.set_thumbnail(url=avatar_url)
-        elif embed_settings.get("thumbnail_url"):
-            embed.set_thumbnail(url=embed_settings["thumbnail_url"])
 
         return embed
 
@@ -783,6 +687,40 @@ class VantageModlog(commands.Cog):
                         reason_text = entry.reason or "No reason provided."
                         return f"User was kicked by {actor_text}. Reason: {reason_text}"
         except (discord.Forbidden, discord.HTTPException):
+            return None
+
+        return None
+
+    async def get_recent_audit_entry(
+        self,
+        guild: discord.Guild,
+        action: discord.AuditLogAction,
+        target_id: int,
+        *,
+        window_seconds: int = AUDIT_LOG_WINDOW_SECONDS,
+    ) -> Optional[discord.AuditLogEntry]:
+        me = guild.me
+        if me is None or not me.guild_permissions.view_audit_log:
+            return None
+
+        window = timedelta(seconds=window_seconds)
+        try:
+            async for entry in guild.audit_logs(limit=AUDIT_LOG_SCAN_LIMIT, action=action):
+                if now_utc() - entry.created_at > window:
+                    break
+                if entry.target and entry.target.id == target_id:
+                    if now_utc() - entry.created_at <= window:
+                        return entry
+        except discord.Forbidden:
+            return None
+        except discord.HTTPException as exc:
+            log.warning(
+                "Failed to fetch audit log entries for guild %s (action=%s, target_id=%s): %s",
+                guild.id,
+                action,
+                target_id,
+                exc,
+            )
             return None
 
         return None
@@ -985,6 +923,7 @@ class VantageModlog(commands.Cog):
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member) -> None:
         changes: List[Tuple[str, str, bool]] = []
+        timeout_changed = False
 
         if before.nick != after.nick:
             changes.append(("Nickname", f"`{before.nick or 'None'}` → `{after.nick or 'None'}`", False))
@@ -1005,6 +944,7 @@ class VantageModlog(commands.Cog):
         before_timeout = before.timed_out_until
         after_timeout = after.timed_out_until
         if before_timeout != after_timeout:
+            timeout_changed = True
             before_text = discord.utils.format_dt(before_timeout, style="F") if before_timeout else "Not timed out"
             after_text = discord.utils.format_dt(after_timeout, style="F") if after_timeout else "Not timed out"
             changes.append(("Timeout", f"{before_text} → {after_text}", False))
@@ -1012,10 +952,34 @@ class VantageModlog(commands.Cog):
         if not changes:
             return
 
+        action = MEMBER_UPDATE_ACTIONS["default"]
+        if timeout_changed:
+            if before_timeout is None and after_timeout is not None:
+                action = MEMBER_UPDATE_ACTIONS["timeout_added"]
+            elif before_timeout is not None and after_timeout is None:
+                action = MEMBER_UPDATE_ACTIONS["timeout_removed"]
+            else:
+                action = MEMBER_UPDATE_ACTIONS["timeout_updated"]
+        elif added or removed:
+            action = MEMBER_UPDATE_ACTIONS["roles_updated"]
+        elif before.nick != after.nick:
+            action = MEMBER_UPDATE_ACTIONS["nickname_updated"]
+
+        audit_entry = await self.get_recent_audit_entry(
+            after.guild,
+            discord.AuditLogAction.member_update,
+            after.id,
+        )
+        if audit_entry:
+            moderator = mention_user(audit_entry.user) if audit_entry.user else "Unknown moderator"
+            changes.append(("Moderator", moderator, False))
+            if audit_entry.reason:
+                changes.append(("Reason", audit_entry.reason, False))
+
         await self.send_log(
             after.guild,
             category="moderation_events",
-            action="Member Updated",
+            action=action,
             details=f"{mention_user(after)} had profile or moderation changes.",
             fields=changes,
             target_user_id=after.id,
@@ -1024,22 +988,48 @@ class VantageModlog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_ban(self, guild: discord.Guild, user: discord.User) -> None:
+        fields: List[Tuple[str, str, bool]] = []
+        audit_entry = await self.get_recent_audit_entry(
+            guild,
+            discord.AuditLogAction.ban,
+            user.id,
+        )
+        if audit_entry:
+            moderator = mention_user(audit_entry.user) if audit_entry.user else "Unknown moderator"
+            fields.append(("Moderator", moderator, False))
+            if audit_entry.reason:
+                fields.append(("Reason", audit_entry.reason, False))
+
         await self.send_log(
             guild,
             category="moderation_events",
             action="Member Banned",
             details=f"{mention_user(user)} was banned.",
+            fields=fields,
             target_user_id=user.id,
             target_user=user,
         )
 
     @commands.Cog.listener()
     async def on_member_unban(self, guild: discord.Guild, user: discord.User) -> None:
+        fields: List[Tuple[str, str, bool]] = []
+        audit_entry = await self.get_recent_audit_entry(
+            guild,
+            discord.AuditLogAction.unban,
+            user.id,
+        )
+        if audit_entry:
+            moderator = mention_user(audit_entry.user) if audit_entry.user else "Unknown moderator"
+            fields.append(("Moderator", moderator, False))
+            if audit_entry.reason:
+                fields.append(("Reason", audit_entry.reason, False))
+
         await self.send_log(
             guild,
             category="moderation_events",
             action="Member Unbanned",
             details=f"{mention_user(user)} was unbanned.",
+            fields=fields,
             target_user_id=user.id,
             target_user=user,
         )
