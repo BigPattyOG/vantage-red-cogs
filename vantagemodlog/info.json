@@ -1,0 +1,20 @@
+{
+  "name": "Vantage Modlog",
+  "author": [
+    "Vantage"
+  ],
+  "short": "Detailed server logging with interactive setup UI.",
+  "description": "Vantage Modlog gives each server a guided /modlog setup panel with embed customization, button controls, and broad event logging.",
+  "end_user_data_statement": "This cog stores per-server configuration (log channel, embed settings, button settings, and enabled event groups).",
+  "requirements": [],
+  "tags": [
+    "moderation",
+    "logging",
+    "embeds",
+    "ui"
+  ],
+  "min_bot_version": "3.5.0",
+  "hidden": false,
+  "disabled": false,
+  "type": "COG"
+}
