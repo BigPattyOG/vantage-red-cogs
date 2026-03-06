@@ -11,6 +11,18 @@ from redbot.core.bot import Red
 VANTAGE_RED = 0xD7263D
 SUPPORT_SERVER_URL = "https://discord.gg/yourserver"
 TRANSIENT_FEEDBACK_SECONDS = 15
+SETUP_PANEL_TITLE = "Vantage Modlog Setup"
+MODLOG_FOOTER_TEXT = "Vantage Moderation"
+AUDIT_LOG_SCAN_LIMIT = 8
+AUDIT_LOG_WINDOW_SECONDS = 20
+MEMBER_UPDATE_ACTIONS: Dict[str, str] = {
+    "default": "Member Updated",
+    "timeout_added": "Timeout Added",
+    "timeout_removed": "Timeout Removed",
+    "timeout_updated": "Timeout Updated",
+    "roles_updated": "Roles Updated",
+    "nickname_updated": "Nickname Updated",
+}
 
 EVENT_GROUP_LABELS: Dict[str, str] = {
     "message_events": "Messages",
@@ -457,7 +469,7 @@ class VantageModlog(commands.Cog):
         first_time: bool,
     ) -> discord.Embed:
         color = discord.Color(VANTAGE_RED)
-        title = "Vantage Modlog Setup"
+        title = SETUP_PANEL_TITLE
         description_lines = []
 
         if first_time:
@@ -512,11 +524,11 @@ class VantageModlog(commands.Cog):
             value=(
                 f"Log title format: `{guild.name} Modlog`\n"
                 f"Support URL: `{SUPPORT_SERVER_URL}`\n"
-                "Footer: `Vantage Moderation`"
+                f"Footer: `{MODLOG_FOOTER_TEXT}`"
             ),
             inline=False,
         )
-        embed.set_footer(text="Vantage Moderation")
+        embed.set_footer(text=MODLOG_FOOTER_TEXT)
 
         return embed
 
@@ -579,7 +591,7 @@ class VantageModlog(commands.Cog):
             for name, value, inline in fields:
                 embed.add_field(name=name, value=truncate(value, limit=1024), inline=inline)
 
-        embed.set_footer(text="Vantage Moderation")
+        embed.set_footer(text=MODLOG_FOOTER_TEXT)
         if target_user:
             avatar_url = target_user.display_avatar.url
             embed.set_author(name=f"{target_user} ({target_user.id})", icon_url=avatar_url)
@@ -682,16 +694,19 @@ class VantageModlog(commands.Cog):
         action: discord.AuditLogAction,
         target_id: int,
         *,
-        window_seconds: int = 20,
+        window_seconds: int = AUDIT_LOG_WINDOW_SECONDS,
     ) -> Optional[discord.AuditLogEntry]:
         me = guild.me
         if me is None or not me.guild_permissions.view_audit_log:
             return None
 
+        window = timedelta(seconds=window_seconds)
         try:
-            async for entry in guild.audit_logs(limit=8, action=action):
+            async for entry in guild.audit_logs(limit=AUDIT_LOG_SCAN_LIMIT, action=action):
+                if now_utc() - entry.created_at > window:
+                    break
                 if entry.target and entry.target.id == target_id:
-                    if now_utc() - entry.created_at <= timedelta(seconds=window_seconds):
+                    if now_utc() - entry.created_at <= window:
                         return entry
         except (discord.Forbidden, discord.HTTPException):
             return None
@@ -925,18 +940,18 @@ class VantageModlog(commands.Cog):
         if not changes:
             return
 
-        action = "Member Updated"
+        action = MEMBER_UPDATE_ACTIONS["default"]
         if timeout_changed:
             if before_timeout is None and after_timeout is not None:
-                action = "Timeout Added"
+                action = MEMBER_UPDATE_ACTIONS["timeout_added"]
             elif before_timeout is not None and after_timeout is None:
-                action = "Timeout Removed"
+                action = MEMBER_UPDATE_ACTIONS["timeout_removed"]
             else:
-                action = "Timeout Updated"
+                action = MEMBER_UPDATE_ACTIONS["timeout_updated"]
         elif added or removed:
-            action = "Roles Updated"
+            action = MEMBER_UPDATE_ACTIONS["roles_updated"]
         elif before.nick != after.nick:
-            action = "Nickname Updated"
+            action = MEMBER_UPDATE_ACTIONS["nickname_updated"]
 
         audit_entry = await self.get_recent_audit_entry(
             after.guild,
